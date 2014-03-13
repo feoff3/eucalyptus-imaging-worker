@@ -31,11 +31,9 @@ class ImagingTask(object):
     FAILED_STATE  = 'FAILED'
     DONE_STATE  = 'DONE'
     EXTANT_STATE = 'EXTANT'
-    def __init__(self, task_id, task_type, volume_task=None, instance_store_task=None):
+    def __init__(self, task_id, task_type):
         self.task_id = task_id
         self.task_type = task_type 
-        self.volume_task=volume_task
-        self.instance_store_task=instance_store_task 
 
     def get_task_id(self):
         return self.task_id
@@ -43,15 +41,15 @@ class ImagingTask(object):
     def get_task_type(self):
         return self.task_type
 
-    def get_volume_task(self):
-        return self.volume_task
+class InstanceStoreImagingTask(ImagingTask):
+    def __init__(self, task_id):
+        ImagingTask.__init__(self, task_id, "convert_image")
 
-    def get_instance_store_task(self):
-        return self.instance_store_task
 
-class VolumeImagingTask(object):
+class VolumeImagingTask(ImagingTask):
     def __init__(self, task_id, manifest_url=None, volume_id=None):
-        self.task_id = task_id
+        ImagingTask.__init__(self, task_id, "import_volume")
+
         self.manifest_url = manifest_url
         self.volume_id = volume_id
         self.ec2_conn = EucaEC2Connection(host_name=config.get_clc_host(),

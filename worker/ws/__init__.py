@@ -117,13 +117,42 @@ class EucaISConnection(object):
         self.conn.http_connection_kwargs['timeout'] = 30
 
     def get_import_task(self):
-        resp=self.conn.make_request('GetInstanceImportTask', {}, path='/', verb='POST')
+        resp = self.conn.get_response('GetInstanceImportTask', {})
         if resp.status != 200:
-           raise httplib.HTTPException(resp.status, resp.reason, resp.read())
+            raise httplib.HTTPException(resp.status, resp.reason, resp.read())
+        result = resp['euca:_get_instance_import_task_response_type']['euca:get_instance_import_task_result']
+        if not result:
+            raise Exception("Invalid response from the server") 
+'''
         root = objectify.XML(resp.read())
+        task_id = None
+        task_type = None
+        if hasattr(root, 'importTaskId'):
+            task_id = root.importTaskId.text
+        if hasattr(root, 'importTaskType'):
+            task_type = root.importTaskType
+        if task_id and task_type:
+            if task_type == "import_volume":
+                if not hasattr(root, 'volumeTask'):
+                    raise Exception("volumeTask is missing from response")
+                volumeTask = root.volumeTask
+                if not hasattr(volumeTask, 'volumeId'):
+                    raise Exception("volume Id is missing for the volume task")
+                volume_id = volumeTask.volumeId 
+                if not hasattr(volumeTask, 'imageManifestSet'):
+                    raise Exception("imageManifestSet is missing from the volume task")
+                imageManifestSet = volumeTask.imageManifestSet
+                 
+                 
+            elif task_type == "convert_image":
+            
+        else:
+            raise Exception("Required parameters are missing")
+ 
         return { 'task_id': root.importTaskId.text if hasattr(root, 'importTaskId') else None,
                  'manifest_url': root.manifestUrl.text if hasattr(root, 'manifestUrl') else None,
                  'volume_id': root.volumeId.text if hasattr(root, 'volumeId') else None }
+'''
     """
     Communicates conversion status to the server
     Returns True if task should be canceled
