@@ -35,11 +35,13 @@ class InstanceImportTask(object):
 
 class InstanceStoreTask(object):
     def __init__(self, parent=None):
-        self.accountId = None
-        self.accessKey = None
-        self.uploadPolicy = None
-        self.s3Url = None
-        self.ec2Cert = None
+        self.account_id = None
+        self.access_key = None
+        self.upload_policy = None
+        self.upload_policy_signature = None
+        self.s3_url = None
+        self.ec2_cert = None
+        self.service_cert_arn = None
         self.import_images = []
         self.converted_image = None
 
@@ -55,15 +57,19 @@ class InstanceStoreTask(object):
 
     def endElement(self, name, value, connection):
         if match_name('accountId',name):
-            self.accountId = value
+            self.account_id = value
         elif match_name('accessKey',name):
-            self.accessKey = value
+            self.access_key = value
         elif match_name('uploadPolicy',name):
-            self.uploadPolicy = value
+            self.upload_policy = value
+        elif match_name('uploadPolicySignature',name):
+            self.upload_policy_signature = value
         elif match_name('s3Url',name):
-            self.s3Url = value
+            self.s3_url = value
         elif match_name('ec2Cert',name):
-            self.ec2Cert = value
+            self.ec2_cert = value
+        elif match_name('serviceCertArn',name):
+            self.service_cert_arn = value
         else:
             setattr(self, name, value)
 
