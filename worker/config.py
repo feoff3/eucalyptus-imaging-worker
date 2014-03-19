@@ -26,7 +26,7 @@ CONF_ROOT = "/etc/eucalyptus-imaging-worker"
 RUN_ROOT = "/var/lib/eucalyptus-imaging-worker"
 SUDO_BIN = "/usr/bin/sudo"
 
-FLOPPY_MOUNT_DIR = "/mnt/floppy"
+FLOPPY_MOUNT_DIR = RUN_ROOT+"/floppy"
 
 # Apply default values in case user does not specify
 pidfile = DEFAULT_PIDFILE

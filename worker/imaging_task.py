@@ -118,7 +118,7 @@ class InstanceStoreImagingTask(ImagingTask):
 
     def __str__(self):
         manifest_str = ''
-        for manifest in self.import_images
+        for manifest in self.import_images:
             manifest_str = manifest_str + '\n' + str(manifest)
         return 'instance-store conversion task - id: %s, bucket: %s, prefix: %s, manifests: %s' % (self.task_id, self.bucket, self.prefix, manifest_str)
 

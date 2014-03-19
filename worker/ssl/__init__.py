@@ -16,9 +16,10 @@
 # CA 93117, USA or visit http://www.eucalyptus.com/licenses/ if you need
 # additional information or have any questions.
 
-import worker.config as config
 import os
-import worker.floppy
+from worker.floppy import FloppyCredential
+import worker.ws
+import worker.config as config
 
 def write_certificate(cert_file, cert_pem):
     if not os.path.exists(cert_file):
