@@ -26,7 +26,7 @@ def write_certificate(cert_file, cert_pem):
         f_cert = open(cert_file, 'w')
         f_cert.write(cert_pem)
         f_cert.close()
-        os.chmod(cert_file, 400)
+        os.chmod(cert_file, 0400)
 
 def download_server_certificate(cert_arn, cert_file, pubkey_included=False):
     if os.path.exists(cert_file):

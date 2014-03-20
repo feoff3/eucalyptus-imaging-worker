@@ -45,15 +45,33 @@ class ImagingTask(object):
         return self.task_type
 
     def process_task(self):
-        raise Exception("Not implemented")
+        if self.run_task():
+            self.report_done()
+            return True
+        else:
+            self.report_failed()
+            return False
+            
 
     def report_running(self, volume_id=None, bytes_transferred=None):
         return self.is_conn.put_import_task_status(self.task_id, ImagingTask.EXTANT_STATE, volume_id, bytes_transferred)
     
-    def report_done(self, volume_id=None, bytes_transferred=None):
+    def report_done(self):
+        volume_id = None
+        if hasattr(self, 'volume_id'):
+            volume_id = self.volume_id
+        bytes_transferred = None
+        if hasattr(self, 'bytes_transferred'):
+            bytes_transferred = self.bytes_transferred
         self.is_conn.put_import_task_status(self.task_id, ImagingTask.DONE_STATE, volume_id, bytes_transferred)
 
     def report_failed(self, volume_id=None, bytes_transferred=None):
+        volume_id = None
+        if hasattr(self, 'volume_id'):
+            volume_id = self.volume_id
+        bytes_transferred = None
+        if hasattr(self, 'bytes_transferred'):
+            bytes_transferred = self.bytes_transferred
         self.is_conn.put_import_task_status(self.task_id, ImagingTask.FAILED_STATE, volume_id, bytes_transferred)
 
     """
@@ -88,7 +106,7 @@ class ImagingTask(object):
             prefix = converted_image.prefix
             architecture = converted_image.architecture
             service_key_path = '%s/service.pem' % config.RUN_ROOT
-            cert_arn = task.service_cert_arn
+            cert_arn = str(task.service_cert_arn)
             worker.ssl.download_server_certificate(cert_arn, service_key_path)
             task = InstanceStoreImagingTask(import_task.task_id, bucket=bucket, prefix=prefix, architecture=architecture, owner_account_id=account_id, owner_access_key=access_key, s3_upload_policy=upload_policy, s3_upload_policy_signature=upload_policy_signature, s3_url=s3_url, ec2_cert_path=ec2_cert_path, service_key_path=service_key_path, import_images=import_images)
         return task
@@ -122,7 +140,7 @@ class InstanceStoreImagingTask(ImagingTask):
             manifest_str = manifest_str + '\n' + str(manifest)
         return 'instance-store conversion task - id: %s, bucket: %s, prefix: %s, manifests: %s' % (self.task_id, self.bucket, self.prefix, manifest_str)
 
-    def process_task(self):
+    def run_task(self):
         return True
 
 class VolumeImagingTask(ImagingTask):
@@ -212,25 +230,25 @@ class VolumeImagingTask(ImagingTask):
             while process.poll() == None:
                 # get bytes transfered
                 output=process.stderr.readline().strip()
-                bytes_transfered = 0
+                bytes_transferred = 0
                 try:
                     res = json.loads(output)
-                    bytes_transfered = res['status']['bytes_downloaded']
+                    bytes_transferred = res['status']['bytes_downloaded']
                 except Exception:
                     worker.log.warn("Downloadimage subprocess reports invalid status")
-                worker.log.debug("Status %s, %d" % (output, bytes_transfered))
-                if self.report_running(self.volume_id, bytes_transfered): 
+                worker.log.debug("Status %s, %d" % (output, bytes_transferred))
+                if self.report_running(self.volume_id, bytes_transferred): 
                     worker.log.info('Conversion task %s was canceled by server' % self.task_id)
                     process.kill()
                 else:
                     time.sleep(10)
 
-    def process_task(self):
+    def run_task(self):
         try:
             done_with_errors = True
             device_to_use = None
             manifest = self.get_manifest()
-            image_size = int(manifest.image.size)
+            self.image_size = int(manifest.image.size)
             if self.volume_id != None:
                 worker.log.info('Attaching volume %s' % self.volume_id)  
                 device_to_use = self.attach_volume()
@@ -239,7 +257,7 @@ class VolumeImagingTask(ImagingTask):
                 worker.log.debug('Needed for image/volume %d bytes' % image_size)
                 if image_size > device_size:
                     worker.log.error('Device is too small for the image/volume')
-                    self.report_failed(self.volume_id, 0)
+                    self.image_size = 0
                     self.detach_volume()
                     return False
                 try:
@@ -256,10 +274,8 @@ class VolumeImagingTask(ImagingTask):
                 self.detach_volume()
             # set DONE or FAILED state
             if done_with_errors:
-                self.report_failed(self.volume_id)
                 return False
             else:
-                self.report_done(self.volume_id, image_size)
                 return True
         except Exception, err:
             worker.log.error('Failed to process task: %s' % err)
