@@ -31,21 +31,17 @@ import threading
 from lxml import objectify
 import worker.ssl
 
-
-class ReportThread(threading.Thread):
+class TaskThread(threading.Thread):
     def __init__(self, function):
         threading.Thread.__init__(self)
-        self.exit_flag = False
         self.function = function
+        self.result = None
 
     def run(self):
-        while not self.exit_flag:
-            self.function()
-            time.sleep(10)
+        self.result = self.function()
 
-    def stop(self):
-        self.exit_flag = True
-
+    def get_result(self):
+        return self.result
 
 class ImagingTask(object):
     FAILED_STATE = 'FAILED'
@@ -59,6 +55,7 @@ class ImagingTask(object):
                                                         aws_access_key_id=config.get_access_key_id(),
                                                         aws_secret_access_key=config.get_secret_access_key(),
                                                         security_token=config.get_security_token())
+        self.should_run = True
 
     def get_task_id(self):
         return self.task_id
@@ -66,13 +63,36 @@ class ImagingTask(object):
     def get_task_type(self):
         return self.task_type
 
+    def run_task(self):
+        raise NotImplementedError()
+
+    def cleanup_task(self):
+        raise NotImplementedError()
+
     def process_task(self):
-        if self.run_task():
+        self.task_thread = TaskThread(self.run_task)
+        while self.task_thread.is_alive():
+            self.report_running()
+
+        if self.task_thread.get_result():
             self.report_done()
             return True
         else:
             self.report_failed()
-            return False
+            return False 
+  
+    def cancel(self):
+        #set should_run=False (to stop the task thread)
+        self.should_run = False
+        if self.task_thread:
+            self.task_thread.join()
+        try:
+            self.cleanup_task()
+        except Exception, err:
+            worker.log.warn('Failed to cleanup task after cancellation: %s' % err, self.task_id)     
+
+    def is_cancelled(self):
+        return ! self.should_run
 
     def report_running(self, volume_id=None, bytes_transferred=None):
         return self.is_conn.put_import_task_status(self.task_id, ImagingTask.EXTANT_STATE, volume_id, bytes_transferred)
@@ -155,12 +175,6 @@ class ImagingTask(object):
             except Exception, ex:
                 worker.log.warn("Download image subprocess reports invalid status. Error: %s" % ex, self.task_id)
             worker.log.debug("Status %s, bytes transferred: %d" % (output, bytes_transferred), self.task_id)
-            if self.report_running(self.volume_id if type(self) is VolumeImagingTask else None, bytes_transferred):
-                worker.log.info('Conversion task %s was canceled by server' % self.task_id, self.task_id)
-                process.kill()
-            else:
-                time.sleep(10)
-
 
 class InstanceStoreImagingTask(ImagingTask):
     def __init__(self, task_id, bucket=None, prefix=None, architecture=None, owner_account_id=None,
@@ -244,10 +258,7 @@ class InstanceStoreImagingTask(ImagingTask):
             # added for debug TODO: remove later
             out = open("/tmp/stdout.txt", "wb")
             err = open("/tmp/stderr.txt", "wb")
-            report_thread = ReportThread(self.report_running)
-            report_thread.start()
             process = subprocess.call(params, stderr=err, stdout=out)
-            report_thread.stop()
             out.close()
             err.close()
         except Exception, err:
@@ -497,10 +508,7 @@ class VolumeImagingTask(ImagingTask):
                                              self.volume.size,
                                              image_size))
                 worker.log.info('Attaching volume %s' % self.volume.id, self.task_id)
-                report_thread = ReportThread(self.report_running)
-                report_thread.start()
                 device_to_use = self.attach_volume()
-                report_thread.stop()
                 worker.log.debug('Using %s as destination' % device_to_use, self.task_id)
                 device_size = self.get_partition_size(device_to_use)
                 worker.log.debug('Attached device size is %d bytes' % device_size, self.task_id)
@@ -528,13 +536,7 @@ class VolumeImagingTask(ImagingTask):
             # detaching volume
             if device_to_use is not None:
                 worker.log.info('Detaching volume %s' % self.volume_id, self.task_id)
-                report_thread = ReportThread(self.report_running)
-                report_thread.start()
-                try:
-                    if self.volume_id:
-                        self.ec2_conn.detach_volume_and_wait(
-                            volume_id=self.volume_id, task_id=self.task_id)
-                finally:
-                    report_thread.stop()
-
+                if self.volume_id:
+                    self.ec2_conn.detach_volume_and_wait(
+                        volume_id=self.volume_id, task_id=self.task_id)
 
