@@ -77,6 +77,7 @@ class ImagingTask(object):
         while self.task_thread.is_alive():
             time.sleep(10)
             if not self.report_running(): # cancelled by imaging service
+                worker.log.debug('task is cancelled by imaging service', self.task_id)
                 self.cancel()
         if not self.is_cancelled():
             if self.task_thread.get_result():
@@ -99,7 +100,7 @@ class ImagingTask(object):
             worker.log.warn('Failed to cleanup task after cancellation: %s' % err, self.task_id)     
 
     def is_cancelled(self):
-        return ! self.should_run
+        return not self.should_run
 
     def report_running(self):
         return self.is_conn.put_import_task_status(self.task_id, ImagingTask.EXTANT_STATE, self.volume_id, self.bytes_transferred)
@@ -181,6 +182,7 @@ class InstanceStoreImagingTask(ImagingTask):
         #  {'id':'eri-xxxx', 'download_manifest_url':'http://.../initrd.manifest.xml','format':'RAMDISK'}
         #  {'id':'emi-xxxx', 'download_manifest_url':'http://.../centos.manifest.xml','format':'PARTITION'}
         self.import_images = import_images
+        self.process = None
 
     def __repr__(self):
         return 'instance-store conversion task:%s' % self.task_id
@@ -289,6 +291,7 @@ class VolumeImagingTask(ImagingTask):
         self.volume = self.volume[0]
         self.volume_attached_dev = None
         self.instance_id = config.get_worker_id()
+        self.process = None
 
 
     def __repr__(self):
@@ -552,7 +555,8 @@ class VolumeImagingTask(ImagingTask):
                 self.bytes_transferred = res['status']['bytes_downloaded']
             except Exception, ex:
                 worker.log.warn("Download image subprocess reports invalid status. Error: %s" % ex, self.task_id)
-            worker.log.debug("Status %s, bytes transferred: %d" % (output, self.bytes_transferred), self.task_id)
+            if self.bytes_transferred:
+                worker.log.debug("Status %s, bytes transferred: %d" % (output, self.bytes_transferred), self.task_id)
             time.sleep(2)
 
     def cancel_cleanup(self):
