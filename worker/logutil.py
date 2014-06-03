@@ -67,6 +67,7 @@ if remote_server is not None and remote_port is not None:
 else:
     log.warn('Remote sys log handler is not configured. Log server is set to %s with port %s ' % (remote_server, remote_port))
 
+
 def get_log_level_as_num(lvl):
     lvl_num = None
     if isinstance(lvl, str):
@@ -78,6 +79,14 @@ def get_log_level_as_num(lvl):
     else:
         lvl_num = lvl
     return lvl_num
+
+
+def set_log_file_count(rotating_files_count):
+    file_log_handler.backupCount = int(rotating_files_count)
+
+
+def set_log_file_size(size_bytes):
+    file_log_handler.maxBytes = int(size_bytes)
 
 
 # Log level will default to INFO
