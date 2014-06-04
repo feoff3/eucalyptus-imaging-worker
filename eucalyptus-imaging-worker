@@ -96,7 +96,7 @@ if __name__ == "__main__":
             "--log-level",
             "--boto-config",
         ]
-        opts, _ = getopt.getopt(sys.argv[1:], "hdp:l:b:c:s:f", longopts)
+        opts, _ = getopt.getopt(sys.argv[1:], "hdp:l:b:c:s:f:", longopts)
         for arg, value in opts:
             if arg == "-d" or arg == "--daemonize":
                 daemon = True

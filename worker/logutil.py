@@ -82,11 +82,17 @@ def get_log_level_as_num(lvl):
 
 
 def set_log_file_count(rotating_files_count):
-    file_log_handler.backupCount = int(rotating_files_count)
+    try:
+        file_log_handler.backupCount = int(rotating_files_count)
+    except Exception, err:
+        log.warn("Failed to set backup file count to '%s' due to '%s'" % (rotating_files_count, err))
 
 
 def set_log_file_size(size_bytes):
-    file_log_handler.maxBytes = int(size_bytes)
+    try:
+        file_log_handler.maxBytes = int(size_bytes)
+    except Exception, err:
+        log.warn("Failed to set log file count to '%s' due to '%s'" % (size_bytes, err))
 
 
 # Log level will default to INFO
