@@ -1,5 +1,5 @@
 from boto.resultset import ResultSet
-import worker
+
 
 
 def match_name(name, param):

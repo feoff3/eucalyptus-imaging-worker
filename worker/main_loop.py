@@ -21,12 +21,14 @@ import config
 import os
 import subprocess
 import traceback
-import worker
-from worker.ws import EucaISConnection
-from worker.imaging_task import ImagingTask
-from worker.failure_with_code import FailureWithCode
-from task_exit_codes import *
 
+from logutil import *
+
+from ws import EucaISConnection
+from imaging_task import ImagingTask
+from failure_with_code import FailureWithCode
+from task_exit_codes import *
+import ws
 
 class WorkerLoop(object):
     STOPPED = "stopped"
@@ -40,25 +42,25 @@ class WorkerLoop(object):
             self.__instance_id = config.get_worker_id()
 
         self.__status = WorkerLoop.STOPPED
-        worker.log.debug('main loop running with instance_id=%s' % (self.__instance_id))
+        log.debug('main loop running with instance_id=%s' % (self.__instance_id))
 
     def start(self):
         self.__status = WorkerLoop.RUNNING
         while self.__status == WorkerLoop.RUNNING:
-            worker.log.info('Querying for new imaging task')
+            log.info('Querying for new imaging task')
             try:
-                con = worker.ws.connect_imaging_worker(aws_access_key_id=config.get_access_key_id(),
+                con = ws.connect_imaging_worker(aws_access_key_id=config.get_access_key_id(),
                                                        aws_secret_access_key=config.get_secret_access_key(),
                                                        security_token=config.get_security_token())
                 import_task = con.get_import_task()
                 try:
                     task = ImagingTask.from_import_task(import_task)
                     if task:
-                        worker.log.info('Processing import task %s' % task, task.task_id)
+                        log.info('Processing import task %s' % task, task.task_id)
                         if task.process_task():
-                            worker.log.info('Done processing task %s' % task.task_id, task.task_id)
+                            log.info('Done processing task %s' % task.task_id, task.task_id)
                         else:
-                            worker.log.error('Processing of the task %s failed' % task.task_id, task.task_id)
+                            log.error('Processing of the task %s failed' % task.task_id, task.task_id)
                     else:
                         pass
                 except Exception, err:
@@ -68,17 +70,17 @@ class WorkerLoop(object):
                     else:
                         con.put_import_task_status(task_id=import_task.task_id, status='FAILED',
                                                    error_code=GENERAL_FAILURE)
-                        worker.log.error('Failed to process task for unknown reason: %s' % err)
+                        log.error('Failed to process task for unknown reason: %s' % err)
             except Exception, err:
                 tb = traceback.format_exc()
-                worker.log.error(str(tb) +
+                log.error(str(tb) +
                                  '\nFailed to query imaging service: %s' % err)
             query_period = config.QUERY_PERIOD_SEC
             while query_period > 0 and self.__status == WorkerLoop.RUNNING:
                 time.sleep(1)
                 query_period -= 1
 
-        worker.log.info('Exiting')
+        log.info('Exiting')
         self.__status = WorkerLoop.STOPPED
 
     def stop(self):

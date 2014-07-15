@@ -18,7 +18,7 @@
 
 import logging
 import os
-import worker.config as config
+import config as config
 from logging.handlers import RotatingFileHandler
 from logging.handlers import SysLogHandler
 
@@ -36,7 +36,7 @@ class RestrictedPermissionRotatingFileHandler(RotatingFileHandler):
 # We can't specify the log file in the config module since that will
 # import boto and keep us from initializing the boto logger.
 #
-LOG_FILE = '/var/log/eucalyptus-imaging-worker/worker.log'
+LOG_FILE = 'pad.log'
 LOG_BYTES = 1024 * 1024  # 1MB
 
 log = logging.getLogger('worker')

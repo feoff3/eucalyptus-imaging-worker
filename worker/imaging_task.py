@@ -19,11 +19,10 @@ import tempfile
 import time
 import json
 import os
-import fcntl
 import re
 import requests
 import config
-import worker
+
 import string
 import subprocess
 import traceback
@@ -31,9 +30,11 @@ import httplib2
 import base64
 import threading
 from lxml import objectify
-import worker.ssl
+import ssl
 from task_exit_codes import *
-from worker.failure_with_code import FailureWithCode
+from failure_with_code import FailureWithCode
+
+from logutil import *
 
 
 class TaskThread(threading.Thread):
@@ -59,7 +60,7 @@ class ImagingTask(object):
     def __init__(self, task_id, task_type):
         self.task_id = task_id
         self.task_type = task_type
-        self.is_conn = worker.ws.connect_imaging_worker(aws_access_key_id=config.get_access_key_id(),
+        self.is_conn = ws.connect_imaging_worker(aws_access_key_id=config.get_access_key_id(),
                                                         aws_secret_access_key=config.get_secret_access_key(),
                                                         security_token=config.get_security_token())
         self.should_run = True
@@ -85,7 +86,7 @@ class ImagingTask(object):
         while self.task_thread.is_alive():
             time.sleep(self.EXTANT_STATUS_REPORT_INTERVAL)
             if not self.report_running():  # cancelled by imaging service
-                worker.log.debug('task is cancelled by imaging service', self.task_id)
+                log.debug('task is cancelled by imaging service', self.task_id)
                 self.cancel()
         if not self.is_cancelled():
             if self.task_thread.get_result() == TASK_DONE:
@@ -105,7 +106,7 @@ class ImagingTask(object):
         try:
             self.cancel_cleanup()  # any task specific cleanup
         except Exception, err:
-            worker.log.warn('Failed to cleanup task after cancellation: %s' % err, self.task_id)
+            log.warn('Failed to cleanup task after cancellation: %s' % err, self.task_id)
 
     def is_cancelled(self):
         return not self.should_run
@@ -138,157 +139,76 @@ class ImagingTask(object):
             manifest_url = None
             if manifests and len(manifests) > 0:
                 manifest_url = manifests[0].manifest_url
-            task = VolumeImagingTask(import_task.task_id, manifest_url, volume_id)
-            ec2_cert = import_task.volume_task.ec2_cert.decode('base64')
-            ec2_cert_path = '%s/cloud-cert.pem' % config.RUN_ROOT
-            worker.ssl.write_certificate(ec2_cert_path, ec2_cert)
-        elif import_task.task_type == "convert_image" and import_task.instance_store_task:
-            task = import_task.instance_store_task
-            account_id = task.account_id
-            access_key = task.access_key
-            upload_policy = task.upload_policy
-            upload_policy_signature = task.upload_policy_signature
-            s3_url = task.s3_url
-            ec2_cert = task.ec2_cert.decode('base64')
-            ec2_cert_path = '%s/cloud-cert.pem' % config.RUN_ROOT
-            worker.ssl.write_certificate(ec2_cert_path, ec2_cert)
-            import_images = task.import_images
-            converted_image = task.converted_image
-            bucket = converted_image.bucket
-            prefix = converted_image.prefix
-            architecture = converted_image.architecture
-            service_key_path = '%s/node-pk.pem' % config.RUN_ROOT
-            service_cert_path = '%s/node-cert.pem' % config.RUN_ROOT
-            cert_arn = str(task.service_cert_arn)
-            cert = worker.ssl.download_server_certificate(cert_arn, task_id=import_task.task_id)
-            worker.ssl.write_certificate(service_key_path, cert.get_private_key())
-            worker.ssl.write_certificate(service_cert_path, cert.get_certificate())
-            task = InstanceStoreImagingTask(import_task.task_id, bucket=bucket, prefix=prefix,
-                                            architecture=architecture, owner_account_id=account_id,
-                                            owner_access_key=access_key, s3_upload_policy=upload_policy,
-                                            s3_upload_policy_signature=upload_policy_signature, s3_url=s3_url,
-                                            ec2_cert_path=ec2_cert_path, service_key_path=service_key_path,
-                                            import_images=import_images)
+
+            # there should be kinda hierarchy
+            task = PadImagingTask(import_task.task_id, manifest_url, volume_id)
+            #ec2_cert = import_task.volume_task.ec2_cert.decode('base64')
+            #ec2_cert_path = '%s/cloud-cert.pem' % config.RUN_ROOT
+            #ssl.write_certificate(ec2_cert_path, ec2_cert)
         return task
 
 
-class InstanceStoreImagingTask(ImagingTask):
-    def __init__(self, task_id, bucket=None, prefix=None, architecture=None, owner_account_id=None,
-                 owner_access_key=None, s3_upload_policy=None, s3_upload_policy_signature=None, s3_url=None,
-                 ec2_cert_path=None, service_key_path=None, import_images=[]):
-        ImagingTask.__init__(self, task_id, "convert_image")
-        self.bucket = bucket
-        self.prefix = prefix
-        self.architecture = architecture
-        self.owner_account_id = owner_account_id
-        self.owner_access_key = owner_access_key
-        self.s3_upload_policy = base64.b64decode(s3_upload_policy)
-        self.s3_upload_policy_signature = s3_upload_policy_signature
-        self.s3_url = s3_url
-        self.ec2_cert_path = ec2_cert_path
-        self.cloud_cert_path = '%s/cloud-cert.pem' % config.RUN_ROOT
-        self.service_key_path = service_key_path
+import ConversionPipelineGenerator
 
-        # list of image manifests that will be the sources of conversion
-        # see worker/ws/instance_import_task::ImportImage
-        # [{'id':'eki-xxxx', 'download_manifest_url':'http://..../vmlinuz.manifest.xml', 'format':'KERNEL'},
-        #  {'id':'eri-xxxx', 'download_manifest_url':'http://.../initrd.manifest.xml','format':'RAMDISK'}
-        #  {'id':'emi-xxxx', 'download_manifest_url':'http://.../centos.manifest.xml','format':'PARTITION'}
-        self.import_images = import_images
+class PadImagingTask(ImagingTask):
+    def __init__(self, task_id, manifest_url=None, volume_id=None):
+        ImagingTask.__init__(self, task_id, "import_volume")
+        self.manifest_url = manifest_url
+        self.instance_id = config.get_worker_id()
         self.process = None
 
     def __repr__(self):
-        return 'instance-store conversion task:%s' % self.task_id
+        return 'Pad volume conversion task:%s' % self.task_id
 
     def __str__(self):
-        manifest_str = ''
-        for manifest in self.import_images:
-            manifest_str = manifest_str + '\n' + str(manifest)
-        return 'instance-store conversion task - id: %s, bucket: %s, prefix: %s, manifests: %s' % (
-            self.task_id, self.bucket, self.prefix, manifest_str)
-
-    def get_image(self, val):
-        for image in self.import_images:
-            if image.format == val:
-                return image
-
-    @staticmethod
-    def get_manifest_url(url_string):
-        if "imaging@" not in url_string:
-            raise FailureWithCode('invalid manifest URL', INPUT_DATA_FAILURE)
-        return url_string
+        return ('Pad Task: {0}, manifest url: {1}'
+                .format(self.task_id, self.manifest_url))
 
     def run_task(self):
+        device_to_use = None
         try:
-            params = ['/usr/libexec/eucalyptus/euca-run-workflow',
-                      'down-bundle-fs/up-bundle',
-                      "--image-manifest-url=%s" % self.get_manifest_url(
-                          self.get_image('PARTITION').download_manifest_url),
-                      "--kernel-manifest-url=%s" % self.get_manifest_url(
-                          self.get_image('KERNEL').download_manifest_url),
-                      "--ramdisk-manifest-url=%s" % self.get_manifest_url(
-                          self.get_image('RAMDISK').download_manifest_url),
-                      '--emi=' + self.get_image('PARTITION').id,
-                      '--eki=' + self.get_image('KERNEL').id,
-                      '--eri=' + self.get_image('RAMDISK').id,
-                      '--decryption-key-path=' + self.service_key_path,
-                      '--encryption-cert-path=' + self.ec2_cert_path,
-                      '--signing-key-path=' + self.service_key_path,
-                      '--prefix=' + self.prefix,
-                      '--bucket=' + self.bucket,
-                      '--work-dir=/mnt/imaging',
-                      '--arch=' + self.architecture,
-                      '--account=' + self.owner_account_id,
-                      '--access-key=' + self.owner_access_key,
-                      '--object-store-url=' + self.s3_url,
-                      '--upload-policy=' + self.s3_upload_policy,
-                      '--upload-policy-signature=' + self.s3_upload_policy_signature,
-                      '--cloud-cert-path=' + self.cloud_cert_path]
-            worker.log.debug('Running %s' % ' '.join(params), self.task_id)
-            # create process with system default buffer size and make its stdout non-blocking
-            self.process = subprocess.Popen(params, bufsize=-1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            fd = self.process.stdout
-            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            if not self.process:
-                worker.log.error('Failed to start the workflow process')
-                return WORKFLOW_FAILURE
-            while not self.is_cancelled() and self.process.poll() is None:
-                # log stdout and stderr from euca-run-workflow into worker.log
-                try:
-                    line = self.process.stdout.readline()
-                    if line:
-                        line = line.strip()
-                        s = filter(None, line.split(' '))
-                        level = s[2] if len(s) > 3 else None
-                        msg = string.join(s[3:])
-                        if level in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
-                            f = getattr(worker.workflow_log, level.lower())
-                            f(msg, self.task_id)
-                        else:
-                            worker.workflow_log.info(line, self.task_id)
-                except:
-                    pass
-            if self.process.returncode is not None and self.process.returncode == 0:
-                return TASK_DONE
-            elif self.process.returncode is not None:
-                worker.log.error('euca-run-workflow returned code: %d' % self.process.returncode, self.task_id)
-                return WORKFLOW_FAILURE
-            else:
-                worker.log.warn('euca-run-workflow has been killed', self.task_id)
-                return TASK_CANCELED
+            manifest = self.__getManifest()
+            image_size = int(manifest['import'].size.text)
 
-        except Exception, err:
-            worker.log.error('Failed to process task: %s' % err, self.task_id)
-            if type(err) is FailureWithCode:
-                return err.failure_code
-            else:
-                return GENERAL_FAILURE
+            #We got manifest, now let's create a pipeline
+            generator = ConversionPipelineGenerator.ConversionPipelineGenerator()
+            (source_reader , destination) = generator.generateConversionPipeline(manifest , config , self)
+            destination.open() #what kind of configs do we need here?
 
-    # don't catch exceptions since they should be catch by the caller
-    def cancel_cleanup(self):
-        if self.process and self.process.poll() is None:
-            self.process.kill()
+            if source_reader.decodeAvailable():
+                while 1:
+                    (chunk , offset) = source_reader.getNextDecodedChunk()
+                    if chunk:
+                        destination .writeData(chunk , offset)
+                    else:
+                        break
+            else:
+                chunk_index = 0
+                max_index = source_reader.getRawChunkCount()
+                offset = 0
+                while chunk_index < max_index:
+                    data = source_reader.getRawDataChunk(chunk_index)
+                    destination.writeData(data , offset)
+                    chunk_index = chunk_index + 1
+                    offset = offset + len(data)
+            
+            destination.confirm()
+        except Exception as err:
+            log.error('Failed to execute task task after cancellation: %s' % err, self.task_id)
+        finally:
+            destination.close()
+
+    def __getManifest(self):
+        if "imaging@" not in self.manifest_url:
+            raise FailureWithCode('Invalid manifest URL', INPUT_DATA_FAILURE)
+        resp, content = httplib2.Http().request(self.manifest_url.replace('imaging@', ''))
+        if resp['status'] != '200' or len(content) <= 0:
+            raise FailureWithCode('Could not download the manifest file', DOWNLOAD_DATA_FAILURE)
+        root = objectify.XML(content)
+        return root
+
+  
+
 
 class VolumeImagingTask(ImagingTask):
     _GIG_ = 1073741824
@@ -296,7 +216,7 @@ class VolumeImagingTask(ImagingTask):
     def __init__(self, task_id, manifest_url=None, volume_id=None):
         ImagingTask.__init__(self, task_id, "import_volume")
         self.manifest_url = manifest_url
-        self.ec2_conn = worker.ws.connect_ec2(
+        self.ec2_conn = ws.connect_ec2(
             aws_access_key_id=config.get_access_key_id(),
             aws_secret_access_key=config.get_secret_access_key(),
             security_token=config.get_security_token())
@@ -322,11 +242,11 @@ class VolumeImagingTask(ImagingTask):
     def get_partition_size(self, partition):
         p = subprocess.Popen(["sudo", "blockdev", "--getsize64", partition], stdout=subprocess.PIPE)
         t = p.communicate()[0]
-        worker.log.debug('The blockdev reported %s for %s' % (t.rstrip('\n'), partition), self.task_id)
+        log.debug('The blockdev reported %s for %s' % (t.rstrip('\n'), partition), self.task_id)
         return int(t.rstrip('\n'))
 
     def add_write_permission(self, partition):
-        worker.log.debug('Setting permissions for %s' % partition)
+        log.debug('Setting permissions for %s' % partition)
         subprocess.call(["sudo", "chmod", "a+w", partition])
 
     def get_manifest(self):
@@ -386,9 +306,9 @@ class VolumeImagingTask(ImagingTask):
         if not self.volume:
             raise FailureWithCode('This import does not have a volume', INPUT_DATA_FAILURE)
         instance_id = self.instance_id
-        devices_before = worker.get_block_devices()
+        devices_before = get_block_devices()
         device_name = self.next_device_name(devices_before)
-        worker.log.debug('Attaching volume {0} to {1} as {2}'.
+        log.debug('Attaching volume {0} to {1} as {2}'.
                          format(self.volume.id, instance_id, device_name), self.task_id)
         self.ec2_conn.attach_volume_and_wait(self.volume.id,
                                              instance_id,
@@ -396,8 +316,8 @@ class VolumeImagingTask(ImagingTask):
         elapsed = 0
         start = time.time()
         while elapsed < local_dev_timeout and not new_device_name:
-            new_block_devices = worker.get_block_devices()
-            worker.log.debug('Waiting for local dev for volume: "{0}", '
+            new_block_devices = get_block_devices()
+            log.debug('Waiting for local dev for volume: "{0}", '
                              'elapsed:{1}'.format(self.volume.id, elapsed), self.task_id)
             diff_list = list(set(new_block_devices) - set(devices_before))
             if diff_list:
@@ -445,7 +365,7 @@ class VolumeImagingTask(ImagingTask):
                 if serial.startswith(volume_id):
                     break
         if os.path.basename(blockdev) == devdir:
-            worker.log.debug('Validated volume:"{0}" at dev:"{1}" '
+            log.debug('Validated volume:"{0}" at dev:"{1}" '
                              'via serial number: '
                              .format(volume_id, blockdev), self.task_id)
             return
@@ -462,7 +382,7 @@ class VolumeImagingTask(ImagingTask):
                   '--import-manifest-url', manifest,
                   '--output-path', device_name,
                   '--cloud-cert-path', cloud_cert_path]
-        worker.log.debug('Running %s' % ' '.join(params), self.task_id)
+        log.debug('Running %s' % ' '.join(params), self.task_id)
         # create process with system default buffer size and make its stderr non-blocking
         self.process = subprocess.Popen(params, stderr=subprocess.PIPE)
         fd = self.process.stderr
@@ -471,10 +391,10 @@ class VolumeImagingTask(ImagingTask):
 
     #TODO: Not in use, remove?
     def detach_volume(self, timeout_sec=3000, local_dev_timeout=30):
-        worker.log.debug('Detaching volume %s' % self.volume.id, self.task_id)
+        log.debug('Detaching volume %s' % self.volume.id, self.task_id)
         if self.volume is None:
             raise FailureWithCode('This import does not have volume id', INPUT_DATA_FAILURE)
-        devices_before = worker.get_block_devices()
+        devices_before = get_block_devices()
         self.volume.update()
         # Do not attempt to detach a volume which is not attached/attaching, or
         # is not attached to this instance
@@ -495,7 +415,7 @@ class VolumeImagingTask(ImagingTask):
             start = time.time()
             devices_after = devices_before
             while elapsed < local_dev_timeout:
-                new_block_devices = worker.get_block_devices()
+                new_block_devices = get_block_devices()
                 devices_after = list(set(devices_before) - set(new_block_devices))
                 if not self.volume_attached_dev in devices_after:
                     break
@@ -504,7 +424,7 @@ class VolumeImagingTask(ImagingTask):
                 elapsed = time.time() - start
             if self.volume_attached_dev in devices_after:
                 self.volume.update()
-                worker.log.error('Volume:"{0}" state:"{1}". Local device:"{2}"'
+                log.error('Volume:"{0}" state:"{1}". Local device:"{2}"'
                                  'found on guest after {3} seconds'
                                  .format(self.volume.id,
                                          self.volume.status,
@@ -518,54 +438,57 @@ class VolumeImagingTask(ImagingTask):
         try:
             manifest = self.get_manifest()
             image_size = int(manifest.image.size)
-            if self.volume is not None:
-                if long(int(self.volume.size) * self._GIG_) < image_size:
-                    raise FailureWithCode('Volume:"{1}" size:"{1}" is too small '
-                                     'for image to be processed:"{2}"'
-                                     .format(self.volume.id,
-                                             self.volume.size,
-                                             image_size), INPUT_DATA_FAILURE)
-                if self.is_cancelled():
-                    return TASK_CANCELED
-                worker.log.info('Attaching volume %s' % self.volume.id, self.task_id)
-                device_to_use = self.attach_volume()
-                worker.log.debug('Using %s as destination' % device_to_use, self.task_id)
-                device_size = self.get_partition_size(device_to_use)
-                worker.log.debug('Attached device size is %d bytes' % device_size, self.task_id)
-                worker.log.debug('Needed for image/volume %d bytes' % image_size, self.task_id)
-                if image_size > device_size:
-                    raise FailureWithCode('Device is too small for the image/volume', INPUT_DATA_FAILURE)
-                try:
-                    self.add_write_permission(device_to_use)
-                    if self.is_cancelled():
-                        return TASK_CANCELED
-                    self.start_download_process(device_to_use)
-                except Exception, err:
-                    worker.log.error('Failure to start workflow process %s' % err)
-                    return WORKFLOW_FAILURE
-                if self.process is not None:
-                    self.wait_with_status(self.process)
-                else:
-                    worker.log.error('Cannot start workflow process')
-                    return WORKFLOW_FAILURE
-                if self.process.returncode is None:
-                    if self.is_cancelled():
-                        return TASK_CANCELED
-                    else:
-                        worker.log.error('Process was killed')
-                        return WORKFLOW_FAILURE
-                elif self.process.returncode != 0:
-                    worker.log.error('Return code from the workflow process is not 0. Code: %d' % self.process.returncode)
-                    return WORKFLOW_FAILURE
-            else:
-                worker.log.error('No volume id is found for import-volume task')
-                return INPUT_DATA_FAILURE
+
+
+
+            #if self.volume is not None:
+            #    if long(int(self.volume.size) * self._GIG_) < image_size:
+            #        raise FailureWithCode('Volume:"{1}" size:"{1}" is too small '
+            #                         'for image to be processed:"{2}"'
+            #                         .format(self.volume.id,
+            #                                 self.volume.size,
+            #                                 image_size), INPUT_DATA_FAILURE)
+            #    if self.is_cancelled():
+            #        return TASK_CANCELED
+            #    log.info('Attaching volume %s' % self.volume.id, self.task_id)
+            #    device_to_use = self.attach_volume()
+            #    log.debug('Using %s as destination' % device_to_use, self.task_id)
+            #    device_size = self.get_partition_size(device_to_use)
+            #    log.debug('Attached device size is %d bytes' % device_size, self.task_id)
+            #    log.debug('Needed for image/volume %d bytes' % image_size, self.task_id)
+            #    if image_size > device_size:
+            #        raise FailureWithCode('Device is too small for the image/volume', INPUT_DATA_FAILURE)
+            #    try:
+            #        self.add_write_permission(device_to_use)
+            #        if self.is_cancelled():
+            #            return TASK_CANCELED
+            #        self.start_download_process(device_to_use)
+            #    except Exception, err:
+            #        log.error('Failure to start workflow process %s' % err)
+            #        return WORKFLOW_FAILURE
+            #    if self.process is not None:
+            #        self.wait_with_status(self.process)
+            #    else:
+            #        log.error('Cannot start workflow process')
+            #        return WORKFLOW_FAILURE
+            #    if self.process.returncode is None:
+            #        if self.is_cancelled():
+            #            return TASK_CANCELED
+            #        else:
+            #            log.error('Process was killed')
+            #            return WORKFLOW_FAILURE
+            #    elif self.process.returncode != 0:
+            #        log.error('Return code from the workflow process is not 0. Code: %d' % self.process.returncode)
+            #       return WORKFLOW_FAILURE
+            #else:
+            #    log.error('No volume id is found for import-volume task')
+            #    return INPUT_DATA_FAILURE
 
             return TASK_DONE
 
         except Exception, err:
             tb = traceback.format_exc()
-            worker.log.error(str(tb) + '\nFailed to process task: %s' % err, self.task_id)
+            log.error(str(tb) + '\nFailed to process task: %s' % err, self.task_id)
             if type(err) is FailureWithCode:
                 return err.failure_code
             else:
@@ -573,14 +496,14 @@ class VolumeImagingTask(ImagingTask):
 
         finally:
             if device_to_use is not None and self.volume_id:
-                worker.log.info('Detaching volume %s' % self.volume_id, self.task_id)
+                log.info('Detaching volume %s' % self.volume_id, self.task_id)
                 try:
                     self.ec2_conn.detach_volume_and_wait(volume_id=self.volume_id, task_id=self.task_id)
                 except Exception:
                     return DETACH_VOLUME_FAILURE
 
     def wait_with_status(self, process):
-        worker.log.debug('Waiting for download process', self.task_id)
+        log.debug('Waiting for download process', self.task_id)
         while not self.is_cancelled() and process.poll() is None:
             try:
                  # get bytes transferred
@@ -591,11 +514,11 @@ class VolumeImagingTask(ImagingTask):
                         res = json.loads(line)
                         self.bytes_transferred = res['status']['bytes_downloaded']
                     except Exception, ex:
-                        worker.log.warn(
+                        log.warn(
                             "Download image subprocess reports invalid status. Output: %s. Error: %s" % (line, ex),
                             self.task_id)
                     if self.bytes_transferred:
-                        worker.log.debug("Status %s, bytes transferred: %d" % (line, self.bytes_transferred), self.task_id)
+                        log.debug("Status %s, bytes transferred: %d" % (line, self.bytes_transferred), self.task_id)
             except:
                 pass
 

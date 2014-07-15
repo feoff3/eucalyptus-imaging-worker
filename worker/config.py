@@ -16,12 +16,12 @@
 # CA 93117, USA or visit http://www.eucalyptus.com/licenses/ if you need
 # additional information or have any questions.
 import os
-import httplib2
+#import httplib2
 import boto
 import boto.provider
 
 DEFAULT_PID_ROOT = "/var/run/eucalyptus-imaging-worker"
-DEFAULT_PIDFILE = os.path.join(DEFAULT_PID_ROOT, "eucalyptus-imaging-worker.pid")
+DEFAULT_PIDFILE = os.path.join(DEFAULT_PID_ROOT, "eucalyptus-imaging-pid")
 CONF_ROOT = "/etc/eucalyptus-imaging-worker"
 RUN_ROOT = "/var/lib/eucalyptus-imaging-worker"
 SUDO_BIN = "/usr/bin/sudo"
@@ -35,6 +35,9 @@ boto_config = None
 cred_provider = None
 user_data_store = {}
 QUERY_PERIOD_SEC = 30
+
+
+#MOVE TO CONFIG
 
 
 def get_provider():
@@ -64,26 +67,12 @@ def set_pidfile(filename):
     pidroot = os.path.dirname(pidfile)
 
 
-def query_user_data():
-    resp, content = httplib2.Http().request("http://169.254.169.254/latest/user-data")
-    if resp['status'] != '200' or len(content) <= 0:
-        raise Exception('could not query the userdata')
-    #remove extra euca-.... line
-    lines = content.split('\n')
-    content = lines[len(lines) - 1]
-    #format of userdata = "key1=value1;key2=value2;..."
-    kvlist = content.split(';')
-    for word in kvlist:
-        kv = word.split('=')
-        if len(kv) == 2:
-            user_data_store[kv[0]] = kv[1]
-
 
 def get_value(key, optional=False):
     if key in user_data_store:
         return user_data_store[key]
     else:
-        query_user_data()
+      #  query_user_data()
         if key in user_data_store:
             return user_data_store[key]
         else:
@@ -106,17 +95,22 @@ def get_security_token():
     token = get_provider().get_security_token()
     return token
 
+def get_euca_addr():
+    return "192.168.0.38"
 
 def get_imaging_service_url():
-    return get_value('imaging_service_url')
+    #return get_value('imaging_service_url')
+    return get_euca_addr()
 
 
 def get_compute_service_url():
-    return get_value('compute_service_url')
+    #return get_value('compute_service_url')
+    return get_euca_addr()
 
 
 def get_euare_service_url():
-    return get_value('euare_service_url')
+   # return get_value('euare_service_url')
+   return get_euca_addr()
 
 def get_log_server():
     return get_value('log_server', optional=True)
@@ -145,9 +139,5 @@ __worker_id = None
 
 def get_worker_id():
     global __worker_id
-    if __worker_id is None:
-        resp, content = httplib2.Http().request("http://169.254.169.254/latest/meta-data/instance-id")
-        if resp['status'] != '200' or len(content) <= 0:
-            raise Exception('could not query the metadata for instance id (%s,%s)' % (resp, content))
-        __worker_id = content
+    __worker_id = "wrk1"
     return __worker_id
